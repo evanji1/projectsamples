@@ -1,0 +1,326 @@
+---
+---
+---
+
+# Exploration of AI and ML Salaries
+
+### Evan Ji
+
+## Introduction
+
+The purpose of this project is to explore AI/ML salaries, and predict the job title given the relevant details of a job, like salary, experience level, ratio of remoteness and others. Such an analysis is especially pertinent given the recent climate within the tech industry. With large layoffs happening throughout this project will assist in informing professionals wishing to pivot or find new jobs what jobs to apply for given their skill sets.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidymodels)
+library(tidyverse)
+library(corrplot)
+library(scales)
+library(ggthemes)
+library(rpart.plot)
+library(discrim)
+library(klaR)
+library(ranger)
+library(xgboost)
+```
+
+## Data
+
+### Description
+
+This data was found off Kaggle and can be found [here](https://www.kaggle.com/datasets/bryanb/aiml-salaries?resource=download)
+
+The data contains the following variables.
+
+-   ==work_year== - the year that the salary was paid
+-   ==experience_level== - the experience level of the jobs (EN - entry level, MI - Mid-Level, SE - Senior, EX - executive)
+-   ==employment_type== - type of employment (PT - Part Time, FT - Full Time, CT - Contract, FL - Freelance)
+-   ==job_title== the role/official name of position
+-   ==salary== -gross salary
+-   ==salary_currency== - currency
+-   ==salaryinusd== - salary in USD
+-   ==employee_residence== - employee's country of residence
+-   ==remote_ratio== - overall work done remotely (0, 50, 100)
+-   ==company_location== - location of main office
+-   ==company_size== - average number of people who worked for the company during the year.
+
+### Data Cleaning
+
+As the data itself comes from Kaggle, there is little work that is needed to be done here. However, as we are only interested in jobs in the US, we can filter out the data, and remove some unneeded variables. This leaves 823 observations and 10 variables for us to work with. We also want to combine 'ML Engineer' and 'Machine Learning Engineer' as the two are the same role. I will also combine Data " " Manager roles.
+
+```{r}
+sal_data <- read.csv('~/GitHub/PSTAT231FinalProject/data/salaries.csv')
+sal_data <- sal_data %>% filter(company_location == 'US') %>% dplyr::select(-salary_currency,-salary,-company_location,-employee_residence)
+sal_data <- sal_data %>% mutate(job_title = replace(job_title,job_title =='ML Engineer', 'Machine Learning Engineer')) %>% mutate(job_title = replace(job_title,job_title %in% c('Data Science Manager','Data Manager', 'Data Engineering Manager','Data Analytics Manager'), 'Data xxxx Manager'))
+```
+
+### Data Exploration
+
+Let us take a further look into our data, starting with the outcome variable ==job_title==.
+
+```{r}
+job_title_hist <- ggplot(sal_data,aes(y=job_title),)+geom_bar(stat='count')+theme_linedraw()+theme(axis.text = element_text(size = 5))
+job_title_hist
+```
+
+As we can see certain job_titles occur significantly more than others, and there are A LOT of job_titles. Although I would like to be able to train a model that can handle so many different outcomes, I do not have the proper resources to do so, and instead I will focus on a select few job_titles, namely, Machine Learning Engineer, Data xxxx Manager, Data Scientist, Data Engineer, Data Architect, Data Analyst, Analytics Engineer.
+
+```{r}
+sal_datalarge <- sal_data %>% filter(job_title %in% c('Machine Learning Engineer', 'Data xxxx Manager', 'Data Scientist', 'Data Engineer', 'Data Architect', 'Data Analyst', 'Analytics Engineer'))
+newjob_title_hist <-ggplot(sal_datalarge,aes(y=job_title))+geom_bar(stat='count')+theme_linedraw()+theme(axis.text = element_text(size = 10))
+newjob_title_hist
+```
+
+Even still there are certain job_titles which lack the proper amount of observations in order to train an accurate and efficient model. And so I think that it would be reasonable to cut down the job_titles to just Machine Learning Engineer, Data Scientist, Data Engineer, Data Analyst and Other. There may also be potential issues that arise when there is a large difference in the number of observations for each job_title. (Note: There are problems, I know this because I am writing this retroactively.
+
+```{r}
+sal_data <- sal_data %>% mutate(job_title = replace(job_title,job_title %in% c("Data Science Lead",                    
+"Data Science Consultant","Data Architect","Data xxxx Manager"  ,                    
+"BI Data Analyst","Machine Learning Manager","Applied Scientist"   ,                    
+"Lead Data Scientist","Data Analytics Engineer","ETL Developer",                           
+"AI Scientist", "Data Scientist Lead","Data Specialist",                   
+"Data Operations Engineer","Business Data Analyst","NLP Engineer" , "Applied Machine Learning Scientist", "Machine Learning Scientist","Financial Data Analyst","Data Operations Analyst","Data Analytics Consultant", "Product Data Analyst",                    
+"Research Scientist","Machine Learning Infrastructure Engineer","Cloud Data Architect" ,                   
+"Machine Learning Developer", "Head of Data Science", "Applied Data Scientist" ,                 
+"Head of Data","Data Analytics Lead" ,"Principal Data Scientist",                
+"Computer Vision Engineer","Principal Data Engineer", "Director of Data Science" ,               
+"Big Data Engineer", "Lead Data Analyst", "Computer Vision Software Engineer" ,      
+"Lead Data Engineer" ,"Cloud Data Engineer","Principal Data Analyst","Staff Data Scientist","Director of Data Engineering","Analytics Engineer"), 'Other'))%>%mutate(job_title = factor(job_title))%>%mutate(remote_ratio = factor(remote_ratio))%>%mutate(company_size = factor(company_size))%>%mutate(experience_level = factor(experience_level))%>%mutate(work_year = factor(work_year))%>%mutate(employment_type = factor(employment_type))
+newjob_title_hist2 <-ggplot(sal_data,aes(y=job_title))+geom_bar(stat='count')+theme_linedraw()+theme(axis.text = element_text(size = 10))
+newjob_title_hist2
+```
+
+This still leaves us with 823 observations which is 69% of our original dataset and should be sufficient in training our models. Now let us look at how or numerical variables interact with one another. (They don't I only have one numerical variable)
+
+```{r}
+sal_data_cor = cor(select_if(sal_data,is.numeric))
+corrplot(sal_data_cor)
+## I know that this correlation plot is useless. I just really like correlation plots.
+```
+
+As we can see there is little to no interaction. I am more interested in the categorical variable interactions however as there seems to be intuitive interactions. For example, I believe that for job_titles with greater counts such as data scientist, the distribution of experience level should be roughly normal, and for job_titles with lower counts they will concentrate on one experience level (i.e data xxxx manager should show more executives). I'm also curious as to how remote_ratio affects the salary. I would expect a higher remote ratio to have a lower corresponding salary_in_usd. In the same vein, I would also like to explore the same effects between employment_type and salary_in_usd.
+
+```{r}
+job_title_histexplevel <-ggplot(sal_data,aes(y=job_title,fill = experience_level))+geom_histogram(stat='count',position = 'dodge')
+job_title_histexplevel
+```
+
+Note: There appears to be VERY FEW EX level observations, and a lot more SE, followed by MI observations which is expected given most company structures. Contrary to my belief however, certain job_titles do not experience a single clustering of experience_level.
+
+```{r}
+remote_ratio_sal_box <- ggplot(sal_data,aes(x=remote_ratio,y=salary_in_usd,group = remote_ratio,fill=remote_ratio))+geom_boxplot() + scale_y_continuous(name="Salary in USD", labels = comma)+theme_economist()+scale_fill_manual(values=c("#CC23EA", "#19D630","#24D4F7"))
+remote_ratio_sal_box
+```
+
+Note: The means of each level of remote ratio seems to be similar.
+
+```{r}
+employment_type_sal_box <- ggplot(sal_data,aes(x=employment_type,y=salary_in_usd,group = employment_type,fill=employment_type))+geom_boxplot() + scale_y_continuous(name="Salary in USD", labels = comma)+theme_economist()+scale_fill_manual(values=c("#F35DBD", "#BCF930","#B2FFFF","#FFA500"))
+employment_type_sal_box
+```
+
+Note: Employment types FL and PT have very few observations.
+
+#### Conclusion of Exploration
+
+None of the graphs or plots reflected my initial thoughts. For experience_level there are no clustering for job_titles as I thought there would be. And for remote ratio, it does not appear that greater remoteness resulted in a lower salary. For the relation between employment_type and salary, amazingly enough contract workers were paid more, and freelance was expectedly paid the least. Overall, there seems to be no obvious interactions that we need to consider, and no variables are directly correlated to the outcome variable.
+
+### Data Splitting
+
+```{r}
+set.seed(95120)
+sal_data_split <- initial_split(sal_data,prop = 0.8,strata='job_title')
+sal_data_train <-training(sal_data_split)
+sal_data_test <- testing(sal_data_split)
+sal_data_fold <- vfold_cv(sal_data,v=5,strata = job_title)
+
+```
+
+## Analysis
+
+```{r}
+sal_data_recipe <- recipe(job_title ~ ., sal_data_train)%>%step_dummy(all_nominal_predictors())
+```
+
+### Logistic Regression
+
+```{r}
+log_reg <- logistic_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("classification")
+
+log_wkflow <- workflow() %>% 
+  add_model(log_reg)%>%add_recipe(sal_data_recipe)
+
+log_fit <- fit(log_wkflow, sal_data_train)
+augment(log_fit, new_data = sal_data_train) %>%
+  accuracy(truth = job_title, estimate = .pred_class)
+augment(log_fit, new_data = sal_data_train) %>%
+  conf_mat(truth = job_title, estimate = .pred_class)%>%autoplot(type='heatmap')+theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+```
+
+### Linear Discriminant Analysis
+
+```{r}
+lda_mod <- discrim_linear() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+lda_wkflow <- workflow() %>% 
+  add_model(lda_mod) %>% 
+  add_recipe(sal_data_recipe)
+
+lda_fit <- fit(lda_wkflow, sal_data_train)
+augment(lda_fit, new_data = sal_data_train) %>%
+  accuracy(truth = job_title, estimate = .pred_class)
+augment(lda_fit, new_data = sal_data_train) %>%
+  conf_mat(truth = job_title, estimate = .pred_class)%>%autoplot(type='heatmap')+theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+### Naive Bayes Classifier
+
+```{r}
+sal_data_nbrecipe<-recipe(job_title~.,sal_data)
+nb_mod <- naive_Bayes() %>% 
+  set_mode("classification") %>% 
+  set_engine("klaR") %>% 
+  set_args(usekernel = FALSE) 
+
+nb_wkflow <- workflow() %>% 
+  add_model(nb_mod) %>% 
+  add_recipe(sal_data_nbrecipe)
+
+nb_fit <- fit(nb_wkflow, sal_data_train)
+augment(nb_fit, new_data = sal_data_train) %>%
+  accuracy(truth = job_title, estimate = .pred_class)
+augment(nb_fit, new_data = sal_data_train) %>%
+  conf_mat(truth = job_title, estimate = .pred_class)%>%autoplot(type='heatmap')+theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+### Decision Tree
+
+```{r}
+class_tree_spec <- decision_tree() %>% set_engine('rpart')%>%
+set_mode("classification") %>% set_args(cost_complexity = tune())
+class_tree_wf <- workflow()%>%add_model(class_tree_spec)%>%add_recipe(sal_data_recipe)
+param_grid <- grid_regular(cost_complexity(range= c(-3,-1)), levels=10)
+```
+
+```{r eval=FALSE}
+tune_res <-tune_grid(class_tree_wf, resamples = sal_data_fold,grid = param_grid, metrics = metric_set(accuracy))
+write_rds(tune_res,file = '~/GitHub/PSTAT231FinalProject/dectree.rds')
+```
+
+```{r}
+tune_res<-read_rds('~/GitHub/PSTAT231FinalProject/dectree.rds')
+autoplot(tune_res)
+```
+
+```{r}
+best_complexity <- select_best(tune_res)
+class_tree_final <- finalize_workflow(class_tree_wf, best_complexity)
+class_tree_fit <- fit(class_tree_final, data = sal_data_train)
+class_tree_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+```
+
+```{r}
+augment(class_tree_fit, new_data = sal_data_train) %>%
+  accuracy(truth = job_title, estimate = .pred_class)
+augment(class_tree_fit, new_data = sal_data_train) %>%
+  conf_mat(truth = job_title, estimate = .pred_class)%>%autoplot(type='heatmap')+theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+### Random Forest 
+
+```{r}
+forest_spec <- rand_forest()%>%set_engine("ranger", importance = "impurity")%>%set_mode("classification")%>%set_args(mtry=tune(), trees =tune(),min_n =tune())
+
+forest_wf <- workflow()%>%add_model(forest_spec)%>%add_recipe(sal_data_recipe)
+```
+
+```{r eval=FALSE}
+param_grid2 <- grid_regular(mtry(range = c(3,15)),min_n(range = c(5,10)),trees(range = c(200,1000)),levels=4)
+tune_res1 <-tune_grid(forest_wf, resamples = sal_data_fold,grid = param_grid2, metrics = metric_set(roc_auc))
+write_rds(tune_res1,file = '~/GitHub/PSTAT231FinalProject/randforest.rds')
+```
+
+```{r}
+tune_res1<-read_rds('~/GitHub/PSTAT231FinalProject/randforest.rds')
+autoplot(tune_res1)
+```
+
+```{r}
+best_tune1 <- select_best(tune_res1)
+randforest_final <- finalize_workflow(forest_wf, best_tune1)
+randforest_fit <- fit(randforest_final, data = sal_data_train)
+```
+
+```{r}
+augment(randforest_fit, new_data = sal_data_train) %>%
+  accuracy(truth = job_title, estimate = .pred_class)
+augment(randforest_fit, new_data = sal_data_train) %>%
+  conf_mat(truth = job_title, estimate = .pred_class)%>%autoplot(type='heatmap')+theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+### Boosted Trees
+
+```{r}
+boost_spec <- boost_tree() %>%
+  set_engine("xgboost") %>%set_mode("classification") %>%set_args(trees=tune())
+boost_wf <- workflow()%>%add_model(boost_spec)%>%add_recipe(sal_data_recipe)
+param_grid3 <- grid_regular(trees(range = c(10,200)),levels=5)
+```
+
+```{r eval =FALSE}
+tune_res2 <-tune_grid(boost_wf, resamples = sal_data_fold,grid = param_grid3, metrics = metric_set(roc_auc))
+write_rds(tune_res2,file = '~/GitHub/PSTAT231FinalProject/boosttree.rds')
+```
+
+```{r}
+tune_res2 <-read_rds('~/GitHub/PSTAT231FinalProject/boosttree.rds')
+autoplot(tune_res2)
+```
+
+```{r}
+best_tune2 <- select_best(tune_res2)
+boost_final <- finalize_workflow(boost_wf, best_tune1)
+boost_fit <- fit(boost_final, data = sal_data_train)
+augment(boost_fit, new_data = sal_data_train) %>%
+  accuracy(truth = job_title, estimate = .pred_class)
+augment(boost_fit, new_data = sal_data_train) %>%
+  conf_mat(truth = job_title, estimate = .pred_class)%>%autoplot(type='heatmap')+theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+As we can see the boosted tree model performs the best. This is expected as boosted tree models excel in these sort of classification tasks. Now let us predict job_title for our test data.
+
+### Final Fit
+
+```{r}
+final_final_fit <- fit(boost_final, data = sal_data_test)
+augment(final_final_fit, new_data = sal_data_test) %>%
+  accuracy(truth = job_title, estimate = .pred_class)
+augment(final_final_fit, new_data = sal_data_test) %>%
+  conf_mat(truth = job_title, estimate = .pred_class)%>%autoplot(type='heatmap')
+```
+
+## Conclusion
+
+As you can see from above, our test data accuracy for our final model, the boosted tree is 90%, **SIGNIFICANTLY** higher than that of the logistic regression model, which sat at a 23% accuracy which is barely higher than the roll of a five-sided dice. You can see that for many of the models, when the model did not have a clear outcome class, it almost defaulted to data scientist which had by far the most observations. With each model, the accuracy grew, demonstrating the power of each model. This project came as a result of a personal interest of mine, as I prepare to graduate and seek jobs. I wished to know what sort of job I should be seeking, given my criteria.
+
+```{r}
+dfpredict<-data.frame(work_year='2022',experience_level = 'MI',employment_type = 'FT',salary_in_usd = 150000,remote_ratio = '0', company_size= 'L')
+ownprediction <-predict(final_final_fit,new_data = dfpredict)
+ownprediction
+```
+
+For me, according to this model, I should be looking for a Machine Learning Engineer job. Hopefully this model can help inform other people as well, and although obviously not the sole factor as to what you base your career path on, is helpful in providing information to those just like me.
+
+Note to Professor Coburn: I just want to say that I truly enjoyed your class. Given that the class took place right after another class, and my extremely limited attention span I truly believe that if another professor with less enthusiasm taught the class I would not have attended a single lecture. Of course, on some days I still struggled. In addition, prior to taking this class my confidence in calling myself a "data science" student was extremely lacking. I was on my way to graduating and yet I felt I knew nothing, I suffered from impostor syndrome. After this class, although I know I have more to learn I feel confident in at the very least holding a intelligent conversation on the matter of machine learning.
